@@ -104,6 +104,9 @@ PoC-0-2（transport 合格後の実 Discord 接続）で追加:
 - YouTube Live の管理画面で配信枠が「受信中」になり、会話音声がアーカイブに残る
 - VC join → 送出開始までの provisioning 時間を計測（spec §4.2 の状態遷移の実測値）
 
+### 実施結果（2026-07-06）
+✅ **H1 合格（CF 実機）**。H1a: 実 VC で他参加者の発話を 10.6MB 受信（decodeErrors 0）。H1b: 静止画+無音を RTMPS 送出、YouTube Studio「受信中」・ffmpeg 60s 継続（drop 0 / speed 1x）。provisioning 実測 **約 3.04 秒**。実装は `poc-udp-spike/`、詳細は `docs/cloud-broadcast-poc1-3-handoff.md`。D-1（受信の未保証）は実機成立で解消。
+
 ---
 
 ## PoC-2: BGM ループ + ミックス（B-1 の核心を実測）
@@ -121,6 +124,9 @@ PoC-0-2（transport 合格後の実 Discord 接続）で追加:
 - 無発話区間でも配信が**ストール/デシンクしない**（連続性維持）
 - 発話と BGM が同時に、音切れ・過大な遅延なく YouTube アーカイブに残る
 
+### 実施結果（2026-07-06）
+✅ **H2 合格**。ミキサ（クロック駆動・ジッタバッファ・加算）はローカル mixbench 10 分で drift 非発散（±38ms）・underrun 0 を実証。CF 実機では `/dualtest` で **1 体の Bot が BGM 送出中に他者音声 3.56MB を受信し、自 BGM は受信に非混入（H2c、selfBytes 0）**＝ spec §2.2 の加算ミックス前提が実機成立。`/mixtest` 3 分で発話+BGM を RTMPS 送出、drift -29ms 非発散・drop 0・speed 1.01x、**アーカイブ試聴で会話+BGM を確認（H2a/b）**。H2d も実機で非発散。
+
 ---
 
 ## PoC-3: 負荷計測（H3・基盤確定後）
@@ -128,6 +134,15 @@ PoC-0-2（transport 合格後の実 Discord 接続）で追加:
 - 想定同時発話人数で N 並列 Opus デコード + 1080p 静止画エンコード + AAC の **CPU/メモリ実測**
 - 目標マシンサイズに収まるか。収まらなければ fps/ビットレート（spec §5.2: fps 15/1000k）を調整
 - ここで基盤コスト上限 n を確定（spec §9.3 の「上限を言い切れる」要件）
+
+### 実施結果（2026-07-06）
+✅ **H3 合格**。N_target=2。`instance_type=standard-3`（2 vCPU/8 GiB）で `/loadtest?sink=null` 600 秒: 定常 CPU **p50 35% / p95 39%**（余裕大）、underruns は時間非依存（コールドスタート由来のみ）、dropFrames 0。エンコードが支配項で話者数はほぼ効かず standard-3 は N=2 を大きく超える余力。**月額上限 n ≈ Workers Paid 基本料 $5（≈¥800）**（ワークロード上コンテナ従量は included 枠内で実質 0。`mvp-spec §9.2` 更新済み）。
+
+---
+
+## PoC 完了（2026-07-06）
+
+PoC-0〜3 すべて **CF 実機で合格**。メディアプレーンは Cloudflare Containers（standard-3）で確定。設計上の不確実性はゼロ。未実施は H1c（30 分耐久）のみで、CF ライフサイクル起因の失敗要因は排除済み・残存する稀なランタイム更新衝突は `mvp-spec §4.3.1`（中断の即時検知 R1・自動リカバリ R2）を要件化して吸収。次段は本実装（制御プレーン・構成 as Code・R1/R2・30 分耐久の本番確認）。詳細: `docs/cloud-broadcast-poc1-3-handoff.md`。
 
 ---
 
