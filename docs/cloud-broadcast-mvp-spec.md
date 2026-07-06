@@ -69,9 +69,9 @@ Discord のボイスチャンネルの会話を、BGM とミックスして YouT
 | プレーン | 責務 | 実装 |
 |---|---|---|
 | 制御プレーン | 起動/停止トリガ、構成保管、Secret/OAuth 管理、状態管理 | Cloudflare（Workers / D1 / R2 / Secrets Store） |
-| メディアプレーン | Discord 音声の受信・BGM 再生・ミックス・RTMPS 送出 | 常駐コンテナ（基盤は未決 / 9 章・13 章） |
+| メディアプレーン | Discord 音声の受信・BGM 再生・ミックス・RTMPS 送出 | Cloudflare Containers（PoC-0 実測で確定・2026-07-03 / 13 章） |
 
-分離の根拠: メディアプレーンは長時間の常駐接続と UDP 処理（後述）を要するため、サーバーレス（Workers / Cloudflare Containers）では成立しない。制御プレーンは短命処理でよいため Cloudflare に寄せる。
+分離の根拠: メディアプレーンは長時間の常駐接続と UDP 処理（後述）を要するため、Workers（リクエスト駆動・短命実行）では成立しない。制御プレーンは短命処理でよいため Workers に寄せ、メディアプレーンは Cloudflare Containers（`sleepAfter` で常駐可、アウトバウンド UDP は PoC-0 実測合格）に置く。
 
 ### 3.2 制御フロー
 
@@ -97,7 +97,7 @@ Discord のボイスチャンネルの会話を、BGM とミックスして YouT
 - YouTube 送出 = RTMPS / TCP（アウトバウンド単方向）
 - したがってメディアプレーンの基盤は **アウトバウンド UDP を確実に捌けること** が絶対条件
 
-> **基盤は未決**。制御プレーンが Cloudflare である以上、メディアプレーンも Cloudflare Containers に寄せられれば構成が最もきれいになる。ただし Cloudflare Containers は inbound TCP/UDP 不可（公式ドキュメント明記）かつ scale-to-zero・エフェメラル設計で、**アウトバウンド UDP（双方向リアルタイム音声）が成立するかはドキュメントに答えがない灰色領域**。ここが成否を分けるため、**Cloudflare Containers でのアウトバウンド UDP 音声の検証を最優先の PoC とする**（13 章）。通れば Cloudflare に寄せる。通らなければ、アウトバウンド UDP を捌ける常駐基盤（9 章の候補群）へ落とす。
+> **基盤は Cloudflare Containers で決着（PoC-0 実測合格・2026-07-03）**。灰色領域だったアウトバウンド UDP は、deploy 済み CF ネットワーク上で STUN 往復（3 試行）と Discord voice 実接続（`VoiceConnectionStatus.Ready` 到達）を実測し、成立を確認した。inbound TCP/UDP 不可（公式明記）は変わらないが、Discord 音声は Bot 発のアウトバウンドなので影響しない。メディアプレーンも Cloudflare に寄せ、制御と同一スタックで構成する。詳細は `cloud-broadcast-poc0-result.md` / `cloud-broadcast-feasibility-check.md` A-1 を参照。9 章の常駐基盤候補は移行時の保険に位置づけを変更。
 
 ---
 
@@ -269,7 +269,7 @@ MVP は手動でストリームキーを用意し `secret://youtube/stream-key` 
 
 ### 9.2 コスト帯（月額上限 n、2026-07 時点調査。採用時に再確認）
 
-以下は**候補段階の比較**であり、基盤は未確定。Cloudflare Containers が使える場合は Cloudflare 側コストに統合される（別途要算出）。
+基盤は Cloudflare Containers で確定（PoC-0）したため、コストは Cloudflare 側に統合される（PoC-3 の負荷計測でマシンサイズとあわせて算出）。以下の常駐基盤の比較は、Cloudflare から移行が必要になった場合の保険として残す。
 
 | 帯 | サービス | n（月額） | 備考 |
 |---|---|---|---|
@@ -282,7 +282,7 @@ MVP は手動でストリームキーを用意し `secret://youtube/stream-key` 
 
 - コストの絶対額より「上限 n を言い切れる（予測可能性）」が要件
 - 物理アクセス不可のためオンプレ / 自宅サーバーは不可
-- **基盤は未決**。まず Cloudflare Containers のアウトバウンド UDP を検証し（13 章）、成立すれば Cloudflare に寄せる。不成立の場合、上表の常駐基盤候補から予測可能性・安定性で選定する
+- **基盤は Cloudflare Containers で決着**（PoC-0 合格・2026-07-03）。上表の常駐基盤候補は移行時の保険に位置づけを変更
 - 各候補の技術的評価（UDP との相性等）は tech ナレッジ `cloud-broadcast-hosting-cost-tiers` を参照
 
 ---
@@ -310,7 +310,7 @@ MVP は手動でストリームキーを用意し `secret://youtube/stream-key` 
 | 「常時無料（0 円絶対）」を前提とした基盤選定 | 会社利用では絶対額より「上限 n を言い切れる（予測可能性）」が要件。0 か 1 かではなく見積もれることが本質。無料枠のみに固執すると常駐 UDP との相性で破綻するか、凍結・容量枯渇リスクを抱える |
 | メディアプレーンを Cloudflare Workers で実装 | Workers はリクエスト駆動・短命実行前提。数十分の常駐ボイス接続・生 UDP・FFmpeg のネイティブ重処理と実行モデルが噛み合わない（＝メディアプレーンを分離する動機そのもの） |
 
-> Cloudflare Containers は「却下」ではなく**検証対象（最優先）**。アウトバウンド UDP 音声が成立すれば採用しうる（13 章）。
+> Cloudflare Containers は PoC-0（2026-07-03）でアウトバウンド UDP 音声の成立を実測確認し、**メディアプレーン基盤として採用**した（13 章）。
 
 ---
 
@@ -321,7 +321,7 @@ MVP は手動でストリームキーを用意し `secret://youtube/stream-key` 
 - 音声の送出・受信・ミックスを Discord Bot に集約（OBS・仮想オーディオ廃止）
 - `capture: mixed`（会話 + BGM を 1 トラックにミックス）
 - BGM は本番前に選択、本番中はループ固定
-- 制御プレーン = Cloudflare / メディアプレーン = 外部常駐コンテナ
+- 制御プレーン = Cloudflare / メディアプレーン = **Cloudflare Containers**（PoC-0 実測で確定・2026-07-03。詳細は `cloud-broadcast-poc0-result.md`）
 - 映像は静止画（MVP）
 - 録音同意は取得済み
 
@@ -331,26 +331,26 @@ MVP は手動でストリームキーを用意し `secret://youtube/stream-key` 
 |---|---|---|
 | 起動トリガ | Discord スラッシュコマンド | 実装方式の合意 |
 | YouTube 配信枠 | 手動でキー用意 | 自動化するかの判断 |
-| **メディアプレーン基盤** | **未決** | **まず Cloudflare Containers のアウトバウンド UDP を検証（最優先）。不成立なら 9 章の常駐基盤候補から選定** |
-| Cloudflare Containers 可否 | 検証対象（最優先） | アウトバウンド UDP 音声が成立するかの PoC。成立すれば全て Cloudflare に寄せられる |
+
+> メディアプレーン基盤と Cloudflare Containers 可否は PoC-0（2026-07-03）で決着し、決定事項（12.1）へ移動した。
 
 ### 12.3 実装前に確認すべき外部仕様
 
 - `@discordjs/voice` の受信・再生 API（現行版・仕様変更歴あり）
 - Discord Voice の UDP 仕様および音声受信の規約上の扱い
 - YouTube Live Streaming API の現行 ingest 対応プロトコル
-- Cloudflare Containers のアウトバウンド UDP 対応（ドキュメントに記載がないため PoC 必須）。および選定候補基盤の停止中課金・実行時間
+- ~~Cloudflare Containers のアウトバウンド UDP 対応（ドキュメントに記載がないため PoC 必須）~~ → **PoC-0 で実測決着・合格（2026-07-03）**
 
 ---
 
 ## 13. 実装順序（推奨）
 
-1. **PoC（最優先）**: **Cloudflare Containers でアウトバウンド UDP 音声が成立するかを検証する**。`@discordjs/voice` で VC 参加 → 会話受信 → RTMPS で YouTube へ送出（UDP が通ることの実証）。ここが基盤選定と全体構成の分岐点
-   - 成立 → メディアプレーンも Cloudflare に寄せる（制御と同一スタック）
-   - 不成立 → 9 章の常駐基盤候補（アウトバウンド UDP 可）から予測可能性・安定性で選定し、同じ PoC を再実施
-2. BGM ループ再生と会話のミックスを追加
-3. 構成スキーマ（Zod）と Secret 注入を実装
-4. Workers による起動 / 停止制御（Discord スラッシュコマンド）と D1 状態管理
-5. 障害時通知、運用面の仕上げ
+1. ✅ **PoC-0（完了・合格 2026-07-03）**: Cloudflare Containers でのアウトバウンド UDP 音声の成立を実測確認した（STUN 往復 3 試行 + `@discordjs/voice` 実接続で `VoiceConnectionStatus.Ready` 到達）。メディアプレーンも Cloudflare に寄せることが確定（`cloud-broadcast-poc0-result.md`）
+2. **PoC-1（次工程）**: CF Containers 上でメディアパイプライン end-to-end（VC 参加 → 会話受信 → 静止画 + AAC で RTMPS 送出）を通す（`cloud-broadcast-poc-plan.md`）
+3. **PoC-2**: BGM ループ再生と会話のミックス（不連続受信の連続化・クロック駆動ミキサ）を追加
+4. **PoC-3**: 負荷計測でマシンサイズとコスト上限を確定
+5. 構成スキーマ（Zod）と Secret 注入を実装
+6. Workers による起動 / 停止制御（Discord スラッシュコマンド）と D1 状態管理
+7. 障害時通知、運用面の仕上げ
 
-ステップ 1 の UDP 実証の結果が基盤を決める。それ以外のステップは基盤選定に依存しない（上位設計に影響しない）。
+ステップ 1 の UDP 実証で基盤は確定済み。以降のステップは基盤選定に依存しない（上位設計に影響しない）。
