@@ -6,15 +6,27 @@
     {
       "class_name": "UdpSpikeContainer",
       "image": "./container/Dockerfile",
-      "max_instances": 1
+      "max_instances": 1,
+      // PoC-3 §6-0: 現行 instance type（2026 CF docs で確認）を明示。
+      // 1080p H.264 リアルタイムエンコードのため lite/basic では不足。standard-3(2 vCPU / 8 GiB)
+      // を計測の起点とし、負荷曲線で不足なら standard-4(4 vCPU) へ引き上げる（§7 分岐）。
+      "instance_type": "standard-3"
     }
   ],
+  // metrics.mjs が vCPU 上限比を算出するのに使う（instance_type と整合させること）。
+  "vars": {
+    "VCPUS": "2",
+    "INSTANCE_TYPE": "standard-3"
+  },
   "durable_objects": {
     "bindings": [{ "name": "UDP_SPIKE", "class_name": "UdpSpikeContainer" }]
   },
   "migrations": [
     { "tag": "v1", "new_sqlite_classes": ["UdpSpikeContainer"] }
   ],
+  // YOUTUBE_STREAM_KEY は送出系エンドポイント(streamtest/pipetest/mixtest/loadtest の RTMPS)でのみ
+  // 必要。required に入れると未設定時に deploy 自体が失敗し、キー不要の loadtest?sink=null も打てなく
+  // なるため required から外す（実行時にコード側で guard 済み）。設定は `wrangler secret put` で。
   "secrets": {
     "required": ["DISCORD_BOT_TOKEN", "DISCORD_GUILD_ID", "DISCORD_CHANNEL_ID"]
   }
