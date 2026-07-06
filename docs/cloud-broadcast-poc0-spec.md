@@ -220,9 +220,15 @@ curl https://poc-udp-spike.<subdomain>.workers.dev/udptest
 
 | 試行 | 送信先 | enableInternet | 結果(ok) | reason | elapsedMs | 備考 |
 |---|---|---|---|---|---|---|
-| 1 | stun.l.google.com:19302 | true | | | | ホスト名（DNS 経由） |
-| 2 | (STUN の IP):19302 | true | | | | DNS を排除した再試験（§9） |
-| 3 | 別 STUN | true | | | | 単一サーバ依存を排除 |
+| 1 | stun.l.google.com:19302 | true | true | binding-success | 35 | ホスト名（DNS 経由） |
+| 2 | 74.125.250.129:19302 | true | true | binding-success | 24 | ①のIP直指定、DNS を排除した再試験（§9） |
+| 3 | global.stun.twilio.com:3478 | true | true | binding-success | 47 | 別ベンダーの STUN、単一サーバ依存を排除 |
+
+**H0: 合格**（2026-07-03、`poc-udp-spike.cancer6.workers.dev`）。
+
+任意追試（§7、実プロトコル）も合格: `@discordjs/voice` で実際に VC join し
+`VoiceConnectionStatus.Ready` まで到達（UDP IP discovery + AEAD 暗号化ネゴシエーション成立）。
+実装は `poc-udp-spike/container/voicetest.mjs`。
 
 ---
 
@@ -238,6 +244,7 @@ curl https://poc-udp-spike.<subdomain>.workers.dev/udptest
 
 ## 10. 完了の定義（Definition of Done）
 
-- deploy 済み CF ネットワーク上で `/udptest` を実行し、§8 の表に**最低 3 試行**の結果を記録した。
-- H0 の yes/no が確定し、§7 の分岐のどちらへ進むかが決まった。
-- 結果を `feasibility-check.md` の A-1 に反映した（「未決」→「実測で決着」）。
+- [x] deploy 済み CF ネットワーク上で `/udptest` を実行し、§8 の表に**最低 3 試行**の結果を記録した。
+- [x] H0 の yes/no が確定し、§7 の分岐のどちらへ進むかが決まった（→ 合格、CF でメディアプレーン統一）。
+- [x] 結果を `feasibility-check.md` の A-1 に反映した（「未決」→「実測で決着」）。
+- [x]（任意追試・実施済み）`@discordjs/voice` での VC join が `VoiceConnectionStatus.Ready` まで到達することを確認した。

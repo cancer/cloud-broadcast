@@ -6,7 +6,8 @@
 research で決着済みの前提（`feasibility-check.md` 調査結果）:
 - **A-2（暗号化）**: 解決可能。現行 `@discordjs/voice` + `sodium-native` で AEAD モード対応。
 - **D-1（受信の規約）**: Bot 音声受信は Discord 公式には未サポート（undocumented）。継続性リスクとして保持。
-- **A-1（CF アウトバウンド UDP）**: **ドキュメントでは未決**。実機 spike でしか判定できない ← 本 PoC の主眼。
+- **A-1（CF アウトバウンド UDP）**: ~~ドキュメントでは未決~~ → **PoC-0 実機 spike で合格決着（2026-07-03）**。
+  詳細は本文 PoC-0「実施結果」および `feasibility-check.md` A-1 参照。
 
 ---
 
@@ -68,6 +69,12 @@ PoC-0-2（transport 合格後の実 Discord 接続）で追加:
 ### 判定
 - **H0 合格** → メディアプレーンも CF に寄せる方針で PoC-1 を CF 上で継続（payoff: スタック統一）
 - **H0 不合格** → PoC-1 を Fly.io で実施し、メディアは常駐基盤に確定
+
+### 実施結果（2026-07-03）
+
+✅ **H0 合格**。0-1（STUN 3試行）・0-2（`@discordjs/voice` 実接続）ともに成功。詳細は
+`docs/cloud-broadcast-feasibility-check.md` A-1、実装は `poc-udp-spike/` を参照。
+**メディアプレーンも CF Containers に統一する方針で PoC-1 へ進む。**
 
 ---
 

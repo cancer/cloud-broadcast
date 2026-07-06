@@ -1,0 +1,14 @@
+{
+  "name": "poc-udp-spike",
+  "private": true,
+  "version": "0.0.0",
+  "scripts": {
+    "deploy": "wrangler deploy"
+  },
+  "devDependencies": {
+    "@cloudflare/containers": "^0.0.20",
+    "@cloudflare/workers-types": "^4.20260701.0",
+    "typescript": "^5.9.0",
+    "wrangler": "^4.107.0"
+  }
+}

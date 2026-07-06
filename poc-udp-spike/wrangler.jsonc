@@ -1,0 +1,21 @@
+{
+  "name": "poc-udp-spike",
+  "main": "src/worker.ts",
+  "compatibility_date": "2026-07-01",
+  "containers": [
+    {
+      "class_name": "UdpSpikeContainer",
+      "image": "./container/Dockerfile",
+      "max_instances": 1
+    }
+  ],
+  "durable_objects": {
+    "bindings": [{ "name": "UDP_SPIKE", "class_name": "UdpSpikeContainer" }]
+  },
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["UdpSpikeContainer"] }
+  ],
+  "secrets": {
+    "required": ["DISCORD_BOT_TOKEN", "DISCORD_GUILD_ID", "DISCORD_CHANNEL_ID"]
+  }
+}
