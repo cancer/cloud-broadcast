@@ -7,8 +7,9 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends python3 build-essential ca-certificates ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
-COPY package.json .
-RUN npm install --omit=dev
+# lockfile で再現ビルド（caret の毎ビルド解決を排除）。npm ci は package-lock.json と厳密一致で入れる。
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev
 
 COPY index.mjs voicetest.mjs receive.mjs rtmpout.mjs mixer.mjs bgm.mjs loadgen.mjs metrics.mjs .
 COPY standby.png .
