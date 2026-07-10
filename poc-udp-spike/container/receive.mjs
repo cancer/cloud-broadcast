@@ -1,6 +1,17 @@
-import { Client, GatewayIntentBits } from 'discord.js';
+import { Client, GatewayIntentBits, ChannelType } from 'discord.js';
 import { joinVoiceChannel, entersState, VoiceConnectionStatus, EndBehaviorType } from '@discordjs/voice';
 import prism from 'prism-media';
+
+// Stage は join 直後 audience(suppress) で送出できない。送出するなら speaker へ昇格する
+// （PATCH /guilds/{id}/voice-states/@me suppress:false 相当）。live な Stage Instance と
+// Bot の Stage モデレーター/Mute Members 権限が前提。VC では no-op で false を返す。
+async function unsuppressIfStage(guild, channelId) {
+  const channel = await guild.channels.fetch(channelId);
+  if (channel?.type !== ChannelType.GuildStageVoice) return false;
+  const me = await guild.members.fetchMe();
+  await me.voice.setSuppressed(false);
+  return true;
+}
 
 // PoC-1 H1a: VC の他参加者の Opus ストリームを購読し、デコードした PCM が取れるか。
 // receive API は Discord 未保証(D-1)・@discordjs/voice 0.19.0 で subscribe/EndBehaviorType/
@@ -26,7 +37,9 @@ export async function joinForReceive({ token, guildId, channelId, timeoutMs = 20
     selfDeaf: false, selfMute, // 受信するので selfDeaf は常に false
   });
   await entersState(connection, VoiceConnectionStatus.Ready, timeoutMs);
-  return { client, connection, userId: client.user.id };
+  // 送出する時だけ speaker 昇格（Stage のみ）。受信専用(selfMute:true)は audience のまま受信できる。
+  const stageSpeaker = selfMute ? false : await unsuppressIfStage(guild, channelId);
+  return { client, connection, userId: client.user.id, stageSpeaker };
 }
 
 // H1a を人の発話なしで測るためのプレイヤー Bot。2 体目のトークンで同じ VC に join し、

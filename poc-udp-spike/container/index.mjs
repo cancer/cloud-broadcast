@@ -127,10 +127,10 @@ async function dualtest(res, durationSec) {
   const cfg = DISCORD();
   if (!cfg.token || !cfg.guildId || !cfg.channelId) return json(res, 200, { ok: false, reason: 'missing-config' });
   const stats = { speakingStarts: 0, bytesByUser: {}, reconnects: 0, decodeErrors: 0 };
-  let client, connection, bgm;
+  let client, connection, bgm, stageSpeaker = false;
   let playerState = 'none';
   try {
-    ({ client, connection } = await joinForReceive({ ...cfg, selfMute: false })); // full-duplex
+    ({ client, connection, stageSpeaker } = await joinForReceive({ ...cfg, selfMute: false })); // full-duplex
     bgm = await Bgm.load('/app/assets/bgm.opus', { frameBytes: FRAME_BYTES });
     const player = bgm.attachPlayer(connection);           // 送出: BGM を VC へ
     player.on('stateChange', (_o, n) => { playerState = n.status; });
@@ -147,6 +147,7 @@ async function dualtest(res, durationSec) {
     const totalBytes = Object.values(stats.bytesByUser).reduce((a, b) => a + b, 0);
     json(res, 200, {
       ok: true, durationSec, selfBotUserId: selfId,
+      stageSpeaker, // Stage で speaker 昇格したか（VC は false=該当なし）
       sentBgm: playerState, // 'playing' なら送出できている
       totalBytesReceived: totalBytes,
       selfBytesReceived: stats.bytesByUser[selfId] ?? 0, // 自分のIDで受信したバイト（0 であるべき=BGM非混入）
