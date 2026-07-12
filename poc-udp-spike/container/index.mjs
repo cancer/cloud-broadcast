@@ -1,11 +1,13 @@
 import http from 'node:http';
 import dgram from 'node:dgram';
+import fs from 'node:fs';
+import os from 'node:os';
 import { URL } from 'node:url';
 import { discordVoiceProbe } from './voicetest.mjs';
 import { joinForReceive, joinForPlay, subscribeAll } from './receive.mjs';
 import { startFfmpeg, writePcm } from './rtmpout.mjs';
 import { Mixer } from './mixer.mjs';
-import { Bgm } from './bgm.mjs';
+import { Bgm, decodeToPcm } from './bgm.mjs';
 import { LoadGen, loadOpusFrames } from './loadgen.mjs';
 import { Metrics } from './metrics.mjs';
 
@@ -279,6 +281,122 @@ async function mixtest(res, durationSec, bgmGain, withPlayer) {
   }
 }
 
+// ── instance-sizing PoC: /sysinfo（インスタンススペックの実測確認）──────────────
+// rollout 後に新 instance_type が実際に反映されたかを、コンテナ内から見える CPU 数・
+// メモリ総量・cgroup 上限で確認する（wrangler の設定値ではなく実機値で判定する）。
+function readTrim(path) {
+  try { return fs.readFileSync(path, 'utf8').trim(); } catch { return null; }
+}
+function sysinfo() {
+  const memTotalKb = Number(readTrim('/proc/meminfo')?.match(/MemTotal:\s+(\d+) kB/)?.[1] ?? 0);
+  return {
+    instanceType: INSTANCE_TYPE, vcpusVar: VCPUS,
+    cpus: os.cpus().length,
+    memTotalMiB: Math.round(memTotalKb / 1024),
+    cgroupMemMax: readTrim('/sys/fs/cgroup/memory.max'),
+    cgroupCpuMax: readTrim('/sys/fs/cgroup/cpu.max'),
+  };
+}
+
+// ── instance-sizing PoC 1+2: /sizetest?durationSec=1800&player=1&prefetch=20&trackSec=240&switchEverySec=600 ──
+// フルワークロード（Discord 接続 + BGM 再生（VC 送出 + ミックス） + 1080p エンコード + RTMPS 送出）に
+// CPU/RSS 計測（PoC 1: 実時間維持）とプリフェッチ相当のメモリ保持 + BGM 切替（PoC 2: OOM なし）を加える。
+// R2 が未有効化のため、プリフェッチは「デコード済み PCM を曲数分メモリ保持」で代替する。製品想定
+// （エンコード済みファイル保持）よりメモリを多く使う worst case なので、これが収まれば十分条件になる。
+let lastResult = null; // 30 分の in-flight 応答が失われた場合に /lastresult で回収する
+// player=1 はプレイヤー Bot（要: 対象 guild への招待）。Bot が guild に居ない環境では loadgen=N で
+// 代替する（実受信と同一の prism Opus デコード経路で N 話者ぶんの PCM を mixer に注入する）。
+async function sizetest(res, { durationSec, bgmGain, withPlayer, prefetch, trackSec, switchEverySec, loadgenN, fps }) {
+  const cfg = DISCORD();
+  const streamKey = STREAM_KEY();
+  const token2 = process.env.DISCORD_BOT_TOKEN_2;
+  if (!cfg.token || !streamKey) return json(res, 200, { ok: false, reason: 'missing-config-or-streamKey' });
+  if (withPlayer && !token2) return json(res, 200, { ok: false, reason: 'missing-DISCORD_BOT_TOKEN_2' });
+  const stats = { speakingStarts: 0, bytesByUser: {}, reconnects: 0, decodeErrors: 0 };
+  let client, connection, proc, mixer, bgm, player, playerBgm, metrics, progressPoll, switchTimer, gen;
+  let speedMin = Infinity, dropFramesMax = 0, switches = 0;
+  const t0 = Date.now();
+  try {
+    metrics = new Metrics({ vcpus: VCPUS, ffmpegPidFn: () => proc?.pid });
+    metrics.start(); // プリフェッチ・起動ピークも計測に含める（PoC 2 の「起動時ピーク」）
+
+    // プリフェッチ: 1 曲 trackSec 秒ぶんの PCM バッファを prefetch 曲分メモリに保持する。
+    // 曲データはバンドル済み bgm.opus のデコード結果をタイルして曲長まで伸ばす（実データで埋め、
+    // RSS に確実に計上させる）。
+    const base = await decodeToPcm('/app/assets/bgm.opus');
+    const bytesPerTrack = 48000 * 2 * 2 * trackSec; // 48kHz/stereo/s16le
+    const tracks = Array.from({ length: prefetch }, () => {
+      const buf = Buffer.allocUnsafe(bytesPerTrack);
+      for (let off = 0; off < bytesPerTrack; off += base.length) {
+        base.copy(buf, off, 0, Math.min(base.length, bytesPerTrack - off));
+      }
+      return buf;
+    });
+    const prefetchMs = Date.now() - t0;
+
+    if (withPlayer) {
+      player = await joinForPlay({ token: token2, guildId: cfg.guildId, channelId: cfg.channelId });
+      playerBgm = await Bgm.load('/app/assets/sample.opus', { frameBytes: FRAME_BYTES });
+      playerBgm.attachPlayer(player.connection); // 「会話」相当の音源を注入
+    }
+    let stageSpeaker = false;
+    ({ client, connection, stageSpeaker } = await joinForReceive({ ...cfg, selfMute: false })); // full-duplex
+    proc = startFfmpeg({ streamKey, silent: false, fps });
+    mixer = new Mixer({ jitterMs: 60, onFrame: (frame) => writePcm(proc, frame) });
+    bgm = new Bgm(tracks[0], { frameBytes: FRAME_BYTES });
+    bgm.attachPlayer(connection);              // (a) VC へ送出
+    mixer.setBgm((n) => bgm.pull(n), bgmGain); // (b) ミックスへ
+    subscribeAll(connection, (uid, pcm) => mixer.pushUser(uid, pcm), stats);
+    mixer.start();
+    if (loadgenN > 0) {
+      const frames = await loadOpusFrames('/app/assets/sample.opus');
+      gen = new LoadGen({ frames, n: loadgenN, mixer });
+      gen.start();
+    }
+    // BGM 切替（新曲を先頭から）。切替時にフェッチは発生しない（全曲プリフェッチ済み）
+    switchTimer = setInterval(() => { switches++; bgm.swap(tracks[switches % tracks.length]); }, switchEverySec * 1000);
+    progressPoll = setInterval(() => {
+      const sp = parseFloat(proc.progress.speed); // "1.02x" → 1.02
+      if (!Number.isNaN(sp)) speedMin = Math.min(speedMin, sp);
+      if (proc.progress.drop_frames != null) dropFramesMax = Math.max(dropFramesMax, proc.progress.drop_frames);
+    }, 1000);
+    await sleep(durationSec * 1000);
+    const m = metrics.summary();
+    const result = {
+      ok: true, durationSec, sysinfo: sysinfo(),
+      prefetch: { tracks: prefetch, trackSec, totalMiB: Math.round(prefetch * bytesPerTrack / (1024 * 1024)), prefetchMs },
+      stageSpeaker, switches, withPlayer: !!withPlayer, loadgenN, bgmGain, fps,
+      cpu: m.cpu, rssMaxMiB: m.rssMaxMiB,
+      mixer: mixer.stats(),
+      ffmpeg: { dropFrames: dropFramesMax, speedMin: speedMin === Infinity ? null : `${speedMin}x` },
+      discord: stats,
+    };
+    lastResult = result;
+    console.log('sizetest result', JSON.stringify(result));
+    json(res, 200, result);
+  } catch (err) {
+    const m = metrics?.summary();
+    const failed = { ok: false, reason: `error: ${err.message}`, cpu: m?.cpu, rssMaxMiB: m?.rssMaxMiB, mixer: mixer?.stats(), ...stats };
+    lastResult = failed;
+    console.log('sizetest failed', JSON.stringify(failed));
+    json(res, 200, failed);
+  } finally {
+    if (switchTimer) clearInterval(switchTimer);
+    if (progressPoll) clearInterval(progressPoll);
+    try { gen?.stop(); } catch {}
+    try { metrics?.stop(); } catch {}
+    try { mixer?.stop(); } catch {}
+    try { bgm?.stop(); } catch {}
+    try { playerBgm?.stop(); } catch {}
+    try { proc?.stdin.end(); } catch {}
+    try { proc?.kill('SIGINT'); } catch {}
+    try { connection?.destroy(); } catch {}
+    await client?.destroy().catch(() => {});
+    try { player?.connection?.destroy(); } catch {}
+    try { await player?.client?.destroy(); } catch {}
+  }
+}
+
 // ── H3: /loadtest?n=N&durationSec=600[&sink=null]（合成負荷）───────────────────
 // sink=null: YouTube キー無しで encode CPU 負荷だけを測る（RTMPS 送出は encode に比べ微小）。
 async function loadtest(res, n, durationSec, nullSink) {
@@ -344,6 +462,21 @@ const server = http.createServer(async (req, res) => {
       await pipetest(res, durationSec);
     } else if (req.url?.startsWith('/mixtest')) {
       await mixtest(res, durationSec, Number(params.get('bgmGain') || 0.3), params.get('player') === '1');
+    } else if (req.url?.startsWith('/sysinfo')) {
+      json(res, 200, sysinfo());
+    } else if (req.url?.startsWith('/lastresult')) {
+      json(res, 200, lastResult ?? { ok: false, reason: 'no-result' });
+    } else if (req.url?.startsWith('/sizetest')) {
+      await sizetest(res, {
+        durationSec,
+        bgmGain: Number(params.get('bgmGain') || 0.3),
+        withPlayer: params.get('player') === '1',
+        prefetch: Number(params.get('prefetch') || 20),
+        trackSec: Number(params.get('trackSec') || 240),
+        switchEverySec: Number(params.get('switchEverySec') || 600),
+        loadgenN: Number(params.get('loadgen') || 0),
+        fps: Number(params.get('fps') || 15),
+      });
     } else if (req.url?.startsWith('/loadtest')) {
       await loadtest(res, Number(params.get('n') || 1), Number(params.get('durationSec') || 600), params.get('sink') === 'null');
     } else {

@@ -8,8 +8,11 @@ import { spawn } from 'node:child_process';
 // standby 画像・出力先はテスト容易性のため env で差し替え可能（既定は本番の YouTube RTMPS）。
 // nullSink=true: encode まで実行して muxer で捨てる（`-f null`）。YouTube キー無しで
 // エンコード CPU 負荷だけを測るための H3 用モード（RTMPS 送出負荷は encode に比べ微小）。
-export function startFfmpeg({ streamKey, silent = false, nullSink = false }) {
+export function startFfmpeg({ streamKey, silent = false, nullSink = false, fps = 15 }) {
   const stillImage = process.env.STANDBY_PNG || '/app/standby.png';
+  // 静止画は毎フレーム同一なので fps を下げても画質は不変、映像エンコード CPU はほぼ fps に比例して減る。
+  // GOP は約 2 秒間隔のキーフレームに（YouTube 推奨）。
+  const gop = Math.max(1, Math.round(fps * 2));
   const output = process.env.RTMP_OUTPUT
     ? process.env.RTMP_OUTPUT
     : `rtmps://a.rtmps.youtube.com/live2/${streamKey}`;
@@ -19,10 +22,10 @@ export function startFfmpeg({ streamKey, silent = false, nullSink = false }) {
   const outputArgs = nullSink ? ['-f', 'null', '-'] : ['-f', 'flv', output];
   const args = [
     '-loglevel', 'warning', '-progress', 'pipe:2',
-    '-loop', '1', '-framerate', '15', '-i', stillImage,
+    '-loop', '1', '-framerate', String(fps), '-i', stillImage,
     ...audioIn,
     '-c:v', 'libx264', '-preset', 'veryfast', '-tune', 'stillimage',
-    '-pix_fmt', 'yuv420p', '-r', '15', '-g', '30', '-b:v', '1000k',
+    '-pix_fmt', 'yuv420p', '-r', String(fps), '-g', String(gop), '-b:v', '1000k',
     '-c:a', 'aac', '-b:a', '160k', '-ar', '48000',
     // 映像と音声の長さが揃わないと出力が止まらない/縮む。stdin PCM 供給が本体なので shortest は付けない。
     ...outputArgs,

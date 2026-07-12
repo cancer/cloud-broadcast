@@ -70,5 +70,13 @@ export class Bgm {
     return this.player;
   }
 
+  // 曲を先頭から差し替える（instance-sizing PoC の BGM 切替）。ミキサへの pull は次フレームから
+  // 新曲になる。VC 側は stop(true) → Idle → attachPlayer 内 playOnce の経路で新 PCM に切り替わる。
+  swap(pcm) {
+    this.pcm = pcm;
+    this.offset = 0;
+    try { this.player?.stop(true); } catch {}
+  }
+
   stop() { try { this.player?.stop(true); } catch {} }
 }
