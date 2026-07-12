@@ -439,6 +439,23 @@ async function loadtest(res, n, durationSec, nullSink) {
   }
 }
 
+// ── PoC-1 上り到達性: /plumbingtest ───────────────────────────────────────────
+// コンテナ→自 Worker(/heartbeat)→固定名 'ctrl' の DO→応答、の 1 往復が成立するか実測する。
+async function plumbingtest(res) {
+  const base = process.env.WORKER_URL;
+  if (!base) return json(res, 200, { ok: false, reason: 'missing-WORKER_URL' });
+  const t0 = Date.now();
+  let r, body;
+  try {
+    r = await fetch(base + '/heartbeat');
+    body = await r.json().catch(() => null);
+  } catch (e) {
+    return json(res, 200, { ok: false, reason: 'fetch-error: ' + e.message });
+  }
+  console.log('plumbingtest', r.status, JSON.stringify(body));
+  json(res, 200, { ok: r.status === 200 && body?.from === 'do', status: r.status, doBody: body, elapsedMs: Date.now() - t0 });
+}
+
 const server = http.createServer(async (req, res) => {
   const params = new URL(req.url || '/', 'http://localhost').searchParams;
   const durationSec = Number(params.get('durationSec') || 60);
@@ -479,6 +496,8 @@ const server = http.createServer(async (req, res) => {
       });
     } else if (req.url?.startsWith('/loadtest')) {
       await loadtest(res, Number(params.get('n') || 1), Number(params.get('durationSec') || 600), params.get('sink') === 'null');
+    } else if (req.url?.startsWith('/plumbingtest')) {
+      await plumbingtest(res);
     } else {
       res.writeHead(200, { 'content-type': 'text/plain' });
       res.end('cloud-broadcast poc ok\n');
