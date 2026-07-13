@@ -7,17 +7,15 @@
       "class_name": "UdpSpikeContainer",
       "image": "./container/Dockerfile",
       "max_instances": 1,
-      // instance-sizing PoC: 1 vCPU は 15fps/1080p では不可だった（単一コア飽和 p50 ~87%）。
-      // 支配項は静止画の映像エンコードなので、fps を落とせば CPU が fps 比例で減り 1 vCPU に収まる
-      // 可能性がある（/sizetest?fps= で検証）。収まれば custom 下限 1 vCPU / 3 GiB を獲得。
-      // 収まらなければ 2 vCPU / 6 GiB へ戻す（memory は vCPU×3 GiB 制約で 6 GiB が下限）。
-      "instance_type": { "vcpu": 1, "memory_mib": 3072, "disk_mb": 6000 }
+      // PoC-2（inlineVolume + CPU 実測）の計測起点。instance-sizing の custom 下限
+      // （1 vCPU / 3 GiB, fps=1 前提）は本 PoC では使わず、standard-3（2 vCPU / 8 GiB）に戻す。
+      "instance_type": "standard-3"
     }
   ],
   // metrics.mjs が vCPU 上限比を算出するのに使う（instance_type と整合させること）。
   "vars": {
-    "VCPUS": "1",
-    "INSTANCE_TYPE": "custom-1vcpu-3gib"
+    "VCPUS": "2",
+    "INSTANCE_TYPE": "standard-3"
   },
   "durable_objects": {
     "bindings": [{ "name": "UDP_SPIKE", "class_name": "UdpSpikeContainer" }]
