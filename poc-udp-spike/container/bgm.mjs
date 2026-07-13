@@ -84,9 +84,10 @@ export class Bgm {
   // VC 送出: 同一 PCM バッファから raw リソースを作り、idle でループ再生成。
   // inlineVolume=true で AudioResource に prism VolumeTransformer が挿さり、再生中に音量を変えられる
   // （その分 CPU コストが増える。PoC-2 の検証対象）。ループ再生成のたびに現行音量を再適用する。
-  // connection 省略時は subscribe しない（NoSubscriberBehavior.Play によりプレイヤーは消費を続けるため、
-  // VC 無しでも inlineVolume の CPU コストを計測できる）。
-  attachPlayer(connection, { inlineVolume = true } = {}) {
+  // 既定は false（従来挙動＝VolumeTransformer なし）。他エンドポイントの CPU プロファイルを変えないため、
+  // 有効化は /voltest が明示的に渡す。connection 省略時は subscribe しない（NoSubscriberBehavior.Play で
+  // プレイヤーは消費を続けるため、VC 無しでも inlineVolume の CPU コストを計測できる）。
+  attachPlayer(connection, { inlineVolume = false } = {}) {
     this.player = createAudioPlayer({ behaviors: { noSubscriber: NoSubscriberBehavior.Play } });
     const playOnce = () => {
       this.resource = createAudioResource(this._pcmStream(), { inputType: StreamType.Raw, inlineVolume });
