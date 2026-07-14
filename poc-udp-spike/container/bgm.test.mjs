@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { Bgm } from './bgm.mjs';
+import { readFileSync } from 'node:fs';
+import { Bgm, decodeBufferToPcm } from './bgm.mjs';
 
 // 定数振幅の 1 フレーム PCM（480 sample/ch × 2ch, 全サンプル値 value）を作る。
 function constPcm(value, samplesPerChannel = 480) {
@@ -60,6 +61,13 @@ test('attachPlayer({inlineVolume:true}) は VolumeTransformer を付け現在音
   assert.ok(bgm.resource.volume);
   assert.equal(bgm.resource.volume.volume, 0.5);
   bgm.stop();
+});
+
+test('decodeBufferToPcm はメモリ上の音声を s16le PCM にデコードする', async () => {
+  const input = readFileSync(new URL('./assets/bgm.opus', import.meta.url));
+  const pcm = await decodeBufferToPcm(input);
+  assert.ok(pcm.length > 0);
+  assert.equal(pcm.length % 4, 0); // stereo s16le は 1 フレーム 4 バイト境界
 });
 
 test('swap は offset を 0 に戻し現在音量を維持する', () => {
