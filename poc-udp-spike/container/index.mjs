@@ -591,6 +591,49 @@ async function prefetchtest(res, { songs, durationSec, switchEverySec, nullSink 
   }
 }
 
+// ── 一時デバッグ: /r2debug（S3 list が空を返す不具合の切り分け用。恒久実装ではない・原因特定後に削除）──
+// listKeys と同じ endpoint/bucket/署名付き fetch を使い、生 status と XML 先頭を返す。
+// シークレット値は出さない（長さと末尾文字コードのみ＝改行/空白混入の検知用）。
+async function r2debug(res) {
+  const { R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET } = process.env;
+  if (!R2_ACCOUNT_ID || !R2_ACCESS_KEY_ID || !R2_SECRET_ACCESS_KEY || !R2_BUCKET)
+    return json(res, 200, { ok: false, reason: 'missing-R2-credentials' });
+  // 末尾数文字のコード配列（改行=10 / 空白=32 の混入を検知。値本体は出さない）
+  const tailCodes = (s, n = 2) => [...s.slice(-n)].map((c) => c.charCodeAt(0));
+  const p = new R2Prefetcher({
+    accountId: R2_ACCOUNT_ID, accessKeyId: R2_ACCESS_KEY_ID,
+    secretAccessKey: R2_SECRET_ACCESS_KEY, bucket: R2_BUCKET,
+  });
+  // 資格情報・endpoint の形は必ず返す（list が例外でも見えるように best-effort と分離）
+  const out = {
+    ok: true,
+    endpoint: JSON.stringify(p.endpoint), // 末尾に改行等が混じれば "..\n" と見える
+    bucket: JSON.stringify(p.bucket),
+    creds: {
+      accountId: { len: R2_ACCOUNT_ID.length, tailCodes: tailCodes(R2_ACCOUNT_ID) },
+      accessKeyId: { len: R2_ACCESS_KEY_ID.length, tailCodes: tailCodes(R2_ACCESS_KEY_ID) },
+      secretAccessKey: { len: R2_SECRET_ACCESS_KEY.length }, // 長さのみ（値も末尾も出さない）
+      bucket: { len: R2_BUCKET.length, tailCodes: tailCodes(R2_BUCKET) },
+    },
+  };
+  try {
+    const url = new URL(`${p.endpoint}/${p.bucket}`);
+    url.searchParams.set('list-type', '2');
+    const listRes = await p.doFetch(url.toString());
+    const xml = await listRes.text();
+    out.list = {
+      url: url.toString(),
+      status: listRes.status,
+      ok: listRes.ok,
+      xmlHead: xml.slice(0, 1000),
+      keyCount: (xml.match(/<Key>/g) || []).length,
+    };
+  } catch (err) {
+    out.list = { error: err.message };
+  }
+  json(res, 200, out);
+}
+
 const server = http.createServer(async (req, res) => {
   const params = new URL(req.url || '/', 'http://localhost').searchParams;
   const durationSec = Number(params.get('durationSec') || 60);
@@ -637,6 +680,8 @@ const server = http.createServer(async (req, res) => {
         inlineVolume: (params.get('vol') || 'on') !== 'off',
         nullSink: params.get('sink') === 'null',
       });
+    } else if (req.url?.startsWith('/r2debug')) {
+      await r2debug(res);
     } else if (req.url?.startsWith('/prefetchtest')) {
       await prefetchtest(res, {
         songs: Number(params.get('songs') || 0), // 0 = 全曲
