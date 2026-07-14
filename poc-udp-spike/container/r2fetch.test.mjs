@@ -71,15 +71,6 @@ test('prefetchAll({limit}) は先頭 N 曲だけ取得する', async () => {
   assert.equal(p.getCount, 2);
 });
 
-test('prefetch 後に追加の GET が発生しない（getCount が増えない）ことを追跡できる', async () => {
-  const stub = makeFetchStub([listXml(['a.mp3', 'b.mp3'])]);
-  const p = new R2Prefetcher({ ...creds, fetchImpl: stub.fetchImpl, decodeImpl: decodeStub });
-  await p.prefetchAll();
-  const after = p.getCount;
-  // 切替はプリフェッチ済み配列を使う想定＝ここでは何もフェッチしない
-  assert.equal(p.getCount - after, 0);
-});
-
 test('list が非 200 なら例外を投げる', async () => {
   const fetchImpl = async () => new Response('nope', { status: 403 });
   const p = new R2Prefetcher({ ...creds, fetchImpl, decodeImpl: decodeStub });
