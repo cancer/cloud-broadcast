@@ -26,9 +26,11 @@ ls -l "$OUT"
 cat <<EOF
 
 # R2 バケット作成と曲アップロード（deploy 同様ユーザー承認が要る）:
+# 注意: --remote 必須。付けないとローカルシミュレータ(.wrangler/state)に書かれ、
+# put/get は round-trip 成功するのに実 R2 は空のまま（コンテナの S3 API から見えない）。
 wrangler r2 bucket create ${BUCKET}
 for f in ${OUT}/*.mp3; do
-  wrangler r2 object put "${BUCKET}/\$(basename "\$f")" --file "\$f"
+  wrangler r2 object put "${BUCKET}/\$(basename "\$f")" --file "\$f" --remote
 done
 
 # コンテナへ渡す資格情報（R2 API トークンから発行した Access Key ID / Secret Access Key）:
