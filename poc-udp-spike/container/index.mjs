@@ -631,6 +631,32 @@ async function r2debug(res) {
   } catch (err) {
     out.list = { error: err.message };
   }
+
+  // GET プローブ: 存在が確実なオブジェクトへ直接 GET し、資格情報がバケットの中身に
+  // 到達できるか判定する（200+bytesLen>0=到達, 404=参照先に無い, 403=権限）。本体は返さない。
+  const probeGet = async (key) => {
+    try {
+      const url = `${p.endpoint}/${p.bucket}/${encodeURIComponent(key)}`;
+      const r = await p.doFetch(url);
+      const bytesLen = r.ok ? (await r.arrayBuffer()).byteLength : null;
+      return { url, status: r.status, ok: r.ok, bytesLen, contentLength: r.headers.get('content-length') };
+    } catch (err) {
+      return { error: err.message };
+    }
+  };
+  out.getProbe = await probeGet('song-01.mp3');
+  out.getProbeSentinel = await probeGet('sentinel.txt');
+
+  // ListObjects V1（list-type 無し）でも試す（実装差の切り分け）。
+  try {
+    const v1 = new URL(`${p.endpoint}/${p.bucket}`);
+    const r = await p.doFetch(v1.toString());
+    const xml = await r.text();
+    out.listV1 = { url: v1.toString(), status: r.status, keyCount: (xml.match(/<Key>/g) || []).length, xmlHead: xml.slice(0, 300) };
+  } catch (err) {
+    out.listV1 = { error: err.message };
+  }
+
   json(res, 200, out);
 }
 
