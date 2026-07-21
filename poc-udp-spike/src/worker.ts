@@ -9,6 +9,7 @@ interface Env {
   YOUTUBE_STREAM_KEY?: string;
   VCPUS?: string;
   INSTANCE_TYPE?: string;
+  WORKER_URL?: string;
 }
 
 export class UdpSpikeContainer extends Container<Env> {
@@ -28,11 +29,22 @@ export class UdpSpikeContainer extends Container<Env> {
     YOUTUBE_STREAM_KEY: this.env.YOUTUBE_STREAM_KEY ?? '',
     VCPUS: this.env.VCPUS ?? '2',
     INSTANCE_TYPE: this.env.INSTANCE_TYPE ?? 'standard-3',
+    WORKER_URL: this.env.WORKER_URL ?? '',
   };
+
+  // PoC-1 上り到達性: コンテナ→DO 往復の DO 側終端。コンテナを起こさず DO 単体で応答する。
+  async heartbeat() {
+    return { pong: true, from: 'do', name: 'ctrl', ts: Date.now(), nonce: crypto.randomUUID() };
+  }
 }
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
+    // PoC-1: /heartbeat は固定名 'ctrl' の DO に委譲し、コンテナを起こさず DO 単体で応答する
+    // （既定名 'cf-singleton-container' とは別インスタンス）。
+    if (new URL(request.url).pathname === '/heartbeat') {
+      return Response.json(await getContainer(env.UDP_SPIKE, 'ctrl').heartbeat());
+    }
     return getContainer(env.UDP_SPIKE).fetch(request);
   },
 };
