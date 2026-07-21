@@ -15,7 +15,9 @@
   // metrics.mjs が vCPU 上限比を算出するのに使う（instance_type と整合させること）。
   "vars": {
     "VCPUS": "2",
-    "INSTANCE_TYPE": "standard-3"
+    "INSTANCE_TYPE": "standard-3",
+    // PoC-1 上り到達性: コンテナ内から fetch する自 Worker の URL。コンテナ起動時に env 経由で渡す。
+    "WORKER_URL": "https://poc-udp-spike.cancer6.workers.dev"
   },
   "durable_objects": {
     "bindings": [{ "name": "UDP_SPIKE", "class_name": "UdpSpikeContainer" }]

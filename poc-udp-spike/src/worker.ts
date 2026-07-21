@@ -14,6 +14,7 @@ interface Env {
   R2_ACCESS_KEY_ID?: string;
   R2_SECRET_ACCESS_KEY?: string;
   R2_BUCKET?: string;
+  WORKER_URL?: string;
 }
 
 export class UdpSpikeContainer extends Container<Env> {
@@ -37,11 +38,22 @@ export class UdpSpikeContainer extends Container<Env> {
     R2_ACCESS_KEY_ID: this.env.R2_ACCESS_KEY_ID ?? '',
     R2_SECRET_ACCESS_KEY: this.env.R2_SECRET_ACCESS_KEY ?? '',
     R2_BUCKET: this.env.R2_BUCKET ?? '',
+    WORKER_URL: this.env.WORKER_URL ?? '',
   };
+
+  // PoC-1 上り到達性: コンテナ→DO 往復の DO 側終端。コンテナを起こさず DO 単体で応答する。
+  async heartbeat() {
+    return { pong: true, from: 'do', name: 'ctrl', ts: Date.now(), nonce: crypto.randomUUID() };
+  }
 }
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
+    // PoC-1: /heartbeat は固定名 'ctrl' の DO に委譲し、コンテナを起こさず DO 単体で応答する
+    // （既定名 'cf-singleton-container' とは別インスタンス）。
+    if (new URL(request.url).pathname === '/heartbeat') {
+      return Response.json(await getContainer(env.UDP_SPIKE, 'ctrl').heartbeat());
+    }
     return getContainer(env.UDP_SPIKE).fetch(request);
   },
 };
