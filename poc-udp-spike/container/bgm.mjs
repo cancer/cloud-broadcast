@@ -33,6 +33,26 @@ export function decodeToPcm(path) {
   });
 }
 
+// メモリ上の音声ファイル(mp3 等)を stdin 経由で ffmpeg に渡し raw PCM にデコードする。
+// R2 から取得したバイト列を一時ファイルを作らずデコードするため（decodeToPcm の buffer 版）。
+export function decodeBufferToPcm(input) {
+  return new Promise((resolve, reject) => {
+    const proc = spawn('ffmpeg', [
+      '-loglevel', 'error', '-i', 'pipe:0',
+      '-f', 's16le', '-ar', '48000', '-ac', '2', 'pipe:1',
+    ], { stdio: ['pipe', 'pipe', 'pipe'] });
+    const chunks = [];
+    proc.stdout.on('data', (c) => chunks.push(c));
+    proc.stderr.on('data', (c) => process.stderr.write(c));
+    proc.on('error', reject);
+    proc.on('close', (code) => code === 0 ? resolve(Buffer.concat(chunks)) : reject(new Error(`ffmpeg decode exit ${code}`)));
+    // ffmpeg が入力途中で終了すると stdin 書き込みが EPIPE になる。これは想定内なので無視するが、
+    // それ以外の stdin エラーは握りつぶさずログに出す（デコード失敗は close の非0で検出される）。
+    proc.stdin.on('error', (err) => { if (err.code !== 'EPIPE') console.error('ffmpeg stdin error', err.message); });
+    proc.stdin.end(input);
+  });
+}
+
 export class Bgm {
   constructor(pcm, { frameBytes = 3840 } = {}) {
     this.pcm = pcm;              // 連続 48k/stereo/s16le PCM

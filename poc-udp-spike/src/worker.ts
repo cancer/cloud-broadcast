@@ -9,6 +9,11 @@ interface Env {
   YOUTUBE_STREAM_KEY?: string;
   VCPUS?: string;
   INSTANCE_TYPE?: string;
+  // PoC-3: R2 S3 互換 API 用（コンテナは Worker ではなく R2 バインディングを使えないため aws4fetch で直叩き）
+  R2_ACCOUNT_ID?: string;
+  R2_ACCESS_KEY_ID?: string;
+  R2_SECRET_ACCESS_KEY?: string;
+  R2_BUCKET?: string;
   WORKER_URL?: string;
 }
 
@@ -29,6 +34,10 @@ export class UdpSpikeContainer extends Container<Env> {
     YOUTUBE_STREAM_KEY: this.env.YOUTUBE_STREAM_KEY ?? '',
     VCPUS: this.env.VCPUS ?? '2',
     INSTANCE_TYPE: this.env.INSTANCE_TYPE ?? 'standard-3',
+    R2_ACCOUNT_ID: this.env.R2_ACCOUNT_ID ?? '',
+    R2_ACCESS_KEY_ID: this.env.R2_ACCESS_KEY_ID ?? '',
+    R2_SECRET_ACCESS_KEY: this.env.R2_SECRET_ACCESS_KEY ?? '',
+    R2_BUCKET: this.env.R2_BUCKET ?? '',
     WORKER_URL: this.env.WORKER_URL ?? '',
   };
 

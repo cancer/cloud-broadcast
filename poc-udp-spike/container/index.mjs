@@ -10,6 +10,7 @@ import { Mixer } from './mixer.mjs';
 import { Bgm, decodeToPcm } from './bgm.mjs';
 import { LoadGen, loadOpusFrames } from './loadgen.mjs';
 import { Metrics } from './metrics.mjs';
+import { R2Prefetcher } from './r2fetch.mjs';
 
 // 既定は Google STUN。DNS を排除して transport だけ見たい時は IP を渡す（PoC-0）
 const DEFAULT_STUN_HOST = process.env.STUN_HOST || 'stun.l.google.com';
@@ -514,6 +515,82 @@ async function voltest(res, { durationSec, gains, inlineVolume, nullSink }) {
   }
 }
 
+// ── PoC-3 プレイリスト: /prefetchtest?songs=N&durationSec=&switchEverySec=&sink=null ──
+// 起動時に R2 の全曲（または先頭 N 曲）を取得・デコードして PCM で保持し、再生中の曲切替が
+// R2 フェッチ無しで即時（先頭から）成立するかを検証する。N を変えて起動時間・メモリ曲線を取る。
+// 資格情報は R2_* 環境変数（worker.ts が secret から注入）。VC は張らず sink=null で完結できる。
+async function prefetchtest(res, { songs, durationSec, switchEverySec, nullSink }) {
+  const streamKey = STREAM_KEY();
+  const { R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET } = process.env;
+  if (!R2_ACCOUNT_ID || !R2_ACCESS_KEY_ID || !R2_SECRET_ACCESS_KEY || !R2_BUCKET)
+    return json(res, 200, { ok: false, reason: 'missing-R2-credentials (R2_ACCOUNT_ID/R2_ACCESS_KEY_ID/R2_SECRET_ACCESS_KEY/R2_BUCKET)' });
+  if (!nullSink && !streamKey) return json(res, 200, { ok: false, reason: 'missing-YOUTUBE_STREAM_KEY (or pass sink=null)' });
+  let proc, mixer, bgm, metrics, switchTimer, progressPoll;
+  const offsetsAtSwitch = [];
+  let speedMin = Infinity, dropFramesMax = 0;
+  const t0 = Date.now();
+  try {
+    metrics = new Metrics({ vcpus: VCPUS, ffmpegPidFn: () => proc?.pid });
+    metrics.start(); // プリフェッチ・起動ピークも計測に含める
+
+    const prefetcher = new R2Prefetcher({
+      accountId: R2_ACCOUNT_ID, accessKeyId: R2_ACCESS_KEY_ID,
+      secretAccessKey: R2_SECRET_ACCESS_KEY, bucket: R2_BUCKET,
+    });
+    const { keys, pcms } = await prefetcher.prefetchAll({ limit: songs || undefined });
+    const prefetchMs = Date.now() - t0;
+    const getCountAfterPrefetch = prefetcher.getCount;
+    if (pcms.length === 0) return json(res, 200, { ok: false, reason: 'no-mp3-in-bucket', keys });
+
+    proc = startFfmpeg({ streamKey, silent: false, nullSink });
+    mixer = new Mixer({ jitterMs: 60, onFrame: (frame) => writePcm(proc, frame) });
+    bgm = new Bgm(pcms[0], { frameBytes: FRAME_BYTES });
+    bgm.attachPlayer(null);                     // VC 無しの標準再生（BGM 送出経路の存在を模す）
+    mixer.setBgm((n) => bgm.pull(n), 0.3);
+    mixer.start();
+    let switches = 0;
+    switchTimer = setInterval(() => {
+      switches++;
+      bgm.swap(pcms[switches % pcms.length]);   // プリフェッチ済み配列から即時差し替え（R2 GET 無し）
+      offsetsAtSwitch.push(bgm.offset);         // 切替直後は先頭（offset=0）
+    }, switchEverySec * 1000);
+    progressPoll = setInterval(() => {
+      const sp = parseFloat(proc.progress.speed);
+      if (!Number.isNaN(sp)) speedMin = Math.min(speedMin, sp);
+      if (proc.progress.drop_frames != null) dropFramesMax = Math.max(dropFramesMax, proc.progress.drop_frames);
+    }, 1000);
+    await sleep(durationSec * 1000);
+    const m = metrics.summary();
+    const result = {
+      ok: true, songs: pcms.length, keys, durationSec, switchEverySec,
+      instanceType: INSTANCE_TYPE, vcpus: VCPUS, sink: nullSink ? 'null' : 'rtmps',
+      prefetchMs,                                    // 起動時間: list+GET+decode 完了まで
+      getCountAfterPrefetch,                         // = songs（全曲取得の裏取り）
+      fetchesDuringPlayback: prefetcher.getCount - getCountAfterPrefetch, // 切替中の R2 GET（0 であること）
+      switches,
+      switchFromHead: offsetsAtSwitch.every((o) => o === 0), // 全切替が先頭からか（offset=0）
+      cpu: m.cpu, rssMaxMiB: m.rssMaxMiB,            // メモリ曲線（N 曲保持）
+      mixer: mixer.stats(),
+      ffmpeg: { dropFrames: dropFramesMax, speedMin: speedMin === Infinity ? null : `${speedMin}x` },
+    };
+    lastResult = result;
+    console.log('prefetchtest result', JSON.stringify(result));
+    json(res, 200, result);
+  } catch (err) {
+    const failed = { ok: false, reason: `error: ${err.message}`, cpu: metrics?.summary().cpu };
+    lastResult = failed;
+    json(res, 200, failed);
+  } finally {
+    if (switchTimer) clearInterval(switchTimer);
+    if (progressPoll) clearInterval(progressPoll);
+    try { metrics?.stop(); } catch {}
+    try { mixer?.stop(); } catch {}
+    try { bgm?.stop(); } catch {}
+    try { proc?.stdin.end(); } catch {}
+    try { proc?.kill('SIGINT'); } catch {}
+  }
+}
+
 // ── PoC-1 上り到達性: /plumbingtest ───────────────────────────────────────────
 // コンテナ→自 Worker(/heartbeat)→固定名 'ctrl' の DO→応答、の 1 往復が成立するか実測する。
 async function plumbingtest(res) {
@@ -575,6 +652,13 @@ const server = http.createServer(async (req, res) => {
         durationSec,
         gains: gains.length ? gains : [0.2, 0.6, 1.0],
         inlineVolume: (params.get('vol') || 'on') !== 'off',
+        nullSink: params.get('sink') === 'null',
+      });
+    } else if (req.url?.startsWith('/prefetchtest')) {
+      await prefetchtest(res, {
+        songs: Number(params.get('songs') || 0), // 0 = 全曲
+        durationSec,
+        switchEverySec: Number(params.get('switchEverySec') || 30),
         nullSink: params.get('sink') === 'null',
       });
     } else if (req.url?.startsWith('/loadtest')) {

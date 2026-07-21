@@ -11,7 +11,7 @@ RUN apt-get update \
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev
 
-COPY index.mjs voicetest.mjs receive.mjs rtmpout.mjs mixer.mjs bgm.mjs loadgen.mjs metrics.mjs .
+COPY index.mjs voicetest.mjs receive.mjs rtmpout.mjs mixer.mjs bgm.mjs loadgen.mjs metrics.mjs r2fetch.mjs .
 COPY standby.png .
 COPY assets ./assets
 EXPOSE 8080
