@@ -1,0 +1,14 @@
+{
+  "name": "poc-sse",
+  "main": "src/worker.ts",
+  "compatibility_date": "2026-07-01",
+  "durable_objects": {
+    "bindings": [{ "name": "SSE_HUB", "class_name": "SseHub" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["SseHub"] }],
+  "observability": { "enabled": true },
+  "vars": {
+    "POLICY_AUD": "3d047b4284217c62af1282740fd6002380a0284d1dd4f500af430e500ddb289f",
+    "TEAM_DOMAIN": "https://cancer6.cloudflareaccess.com"
+  }
+}
