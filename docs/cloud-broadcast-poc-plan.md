@@ -123,6 +123,23 @@ PoC-0-2（transport 合格後の実 Discord 接続）で追加:
 - 不正キー → **サイレント失敗せず**、プロセス終了 or ログから即座に「未確立」を検知できる
 - 正キー → FFmpeg ログと YouTube 管理画面の両方で接続成立を確認できる
 
+### 実施結果（2026-07-21）
+✅ **§1-3 合格**（ローカル macOS + 本番同一イメージ `node:22-slim` の Docker、いずれも実 YouTube ingest `rtmps://a.rtmps.youtube.com/live2/…` へ送出）。本番構成 `rtmpout.mjs` と同型の引数で不正キーを計 4 回送出した。
+
+- **不正キーはサイレント失敗しない**。TCP 接続成功 → YouTube がハンドシェイク中に接続切断 → FFmpeg は**約 0.8〜1.0 秒で非0終了**。`-t 60` 指定でも走り続けない。整形式ダミーキー（`abcd-efgh-…`）・デタラメ文字列とも同一挙動。
+- **stderr パターン**（error レベルなので現行 `-loglevel warning` でも出力される）:
+  ```
+  [tls @ …] IO error: End of file
+  Error opening output rtmps://…: Input/output error
+  ```
+  接続確立時に出る `Output #0, flv, to '…'` も `-progress` の frame/speed も**一切出ない**＝未確立が即判別できる。
+- **exit code はバージョン依存**（deb12 ffmpeg 5.1.9 → `1` / macOS 8.1.1 → `251`=-5/EIO）。**R1 の判定は特定値ではなく「exit ≠ 0」で行う**こと。
+- **R1（即時検知）の土台**: `proc.on('close')` の非0 exit で不正キーを検知できる（`poc-udp-spike/container/index.mjs` に close 監視の下地あり）。加えて `-progress` の frame/speed 停滞 watchdog を持てば、配信中に接続が落ちた場合も拾える。
+- **正キー側の成立シグナル**は H1b 実績で確定済み（`Output #0, flv, to '…'` 到達 + frame 進行 + YouTube Studio「受信中」）。
+- **未検証（計画上「任意」）**: 配信**中**の実キー revoke・ネットワーク断の挙動（実キー revoke 操作が必要なため）。今回は接続確立フェーズの観測に限る。
+
+**合格判定**: 不正キーはサイレント失敗せず約1秒で非0終了しログから即座に未確立を判別可能、正キー成立は H1b で確認済み → 両合格条件を満たす。spec §4.3.1 R1 の検知トリガ＝「ffmpeg プロセスの非0 exit + progress 停滞 watchdog」で確定。
+
 ---
 
 ## PoC-2: BGM ループ + ミックス（B-1 の核心を実測）
