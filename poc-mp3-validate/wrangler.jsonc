@@ -1,0 +1,14 @@
+{
+  "name": "poc-mp3-validate",
+  "main": "src/worker.ts",
+  "compatibility_date": "2026-07-01",
+  // mpg123-decoder は inline wasm を WebAssembly.compile/instantiate でロードする。
+  // これはリクエストハンドラ内でのみ許可され、トップレベル評価では不可なので
+  // デコーダの生成は fetch 内で行う（src/decode.ts）。nodejs_compat は不要（純 wasm）。
+  //
+  // mpg123-decoder の barrel は WebWorker 版も re-export し、それが読む
+  // @eshaz/web-worker が import 時にグローバル Worker を参照して落ちる。
+  // 未使用なので空スタブへ差し替える（stubs/web-worker.js のコメント参照）。
+  "alias": { "@eshaz/web-worker": "./stubs/web-worker.js" },
+  "observability": { "enabled": true }
+}
