@@ -1,0 +1,16 @@
+{
+  "name": "poc-sse",
+  "private": true,
+  "version": "0.0.0",
+  "scripts": {
+    "deploy": "wrangler deploy"
+  },
+  "dependencies": {
+    "jose": "^5.9.6"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260708.1",
+    "typescript": "^5.9.0",
+    "wrangler": "^4.107.0"
+  }
+}
