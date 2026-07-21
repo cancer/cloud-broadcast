@@ -5,6 +5,19 @@ import { createAudioPlayer, createAudioResource, StreamType, NoSubscriberBehavio
 // PoC-2 BGM (§5.3): opus ファイルを 48kHz/stereo/s16le PCM に一度だけデコードしてメモリ保持。
 // 同じバッファを (a) ミキサへの pull と (b) AudioPlayer での VC 送出の両方に使う（二重デコードしない）。
 
+const S16_MAX = 32767;
+const S16_MIN = -32768;
+
+// s16le バッファの各サンプルに gain を掛けて飽和させる（in-place）。
+function applyVolumeInPlace(buf, gain) {
+  for (let i = 0; i < buf.length; i += 2) {
+    let s = Math.round(buf.readInt16LE(i) * gain);
+    if (s > S16_MAX) s = S16_MAX;
+    else if (s < S16_MIN) s = S16_MIN;
+    buf.writeInt16LE(s, i);
+  }
+}
+
 // ffmpeg で opus ファイルを raw PCM(s16le/48k/stereo) にデコードして Buffer で返す。
 export function decodeToPcm(path) {
   return new Promise((resolve, reject) => {
@@ -26,11 +39,15 @@ export class Bgm {
     this.frameBytes = frameBytes;
     this.offset = 0;
     this.player = null;
+    this.resource = null;        // inlineVolume 時の現行 AudioResource（音量再適用のため保持）
+    this.volume = 1;             // BGM の現行音量。VC 送出（inlineVolume）とミックス pull の両経路に効かせる
   }
 
   static async load(path, opts) { return new Bgm(await decodeToPcm(path), opts); }
 
   // ミキサ用 pull: samplesPerChannel 分（= frameBytes）を返す。末尾を跨いだらループ。
+  // RTMP 出力経路は VC 用 AudioResource を通らないので、BGM 音量はここで直接 PCM に適用する
+  // （volume=1 のときは無加工＝既存挙動そのまま）。
   pull(samplesPerChannel) {
     const need = samplesPerChannel * 2 /*ch*/ * 2 /*byte*/;
     if (this.pcm.length === 0) return Buffer.alloc(need);
@@ -43,7 +60,15 @@ export class Bgm {
       this.offset += chunk;
       if (this.offset >= this.pcm.length) this.offset = 0; // ループ
     }
+    if (this.volume !== 1) applyVolumeInPlace(out, this.volume);
     return out;
+  }
+
+  // BGM 音量を再生中に変更する。VC 送出は inlineVolume の VolumeTransformer（resource.volume）で、
+  // ミックス出力は pull 内スケールで、同一の音量に追随する。
+  setVolume(volume) {
+    this.volume = volume;
+    this.resource?.volume?.setVolume?.(volume);
   }
 
   // PCM Buffer を「1 チャンク → EOF」の binary Readable にする。
@@ -57,15 +82,21 @@ export class Bgm {
   }
 
   // VC 送出: 同一 PCM バッファから raw リソースを作り、idle でループ再生成。
-  attachPlayer(connection) {
+  // inlineVolume=true で AudioResource に prism VolumeTransformer が挿さり、再生中に音量を変えられる
+  // （その分 CPU コストが増える。PoC-2 の検証対象）。ループ再生成のたびに現行音量を再適用する。
+  // 既定は false（従来挙動＝VolumeTransformer なし）。他エンドポイントの CPU プロファイルを変えないため、
+  // 有効化は /voltest が明示的に渡す。connection 省略時は subscribe しない（NoSubscriberBehavior.Play で
+  // プレイヤーは消費を続けるため、VC 無しでも inlineVolume の CPU コストを計測できる）。
+  attachPlayer(connection, { inlineVolume = false } = {}) {
     this.player = createAudioPlayer({ behaviors: { noSubscriber: NoSubscriberBehavior.Play } });
     const playOnce = () => {
-      const resource = createAudioResource(this._pcmStream(), { inputType: StreamType.Raw });
-      this.player.play(resource);
+      this.resource = createAudioResource(this._pcmStream(), { inputType: StreamType.Raw, inlineVolume });
+      this.resource.volume?.setVolume(this.volume); // 現行音量を（inlineVolume 時のみ）再適用
+      this.player.play(this.resource);
     };
     this.player.on(AudioPlayerStatus.Idle, () => playOnce()); // ループ
     this.player.on('error', (e) => console.error('bgm player error', e.message));
-    connection.subscribe(this.player);
+    connection?.subscribe(this.player);
     playOnce();
     return this.player;
   }

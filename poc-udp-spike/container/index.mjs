@@ -439,6 +439,81 @@ async function loadtest(res, n, durationSec, nullSink) {
   }
 }
 
+// ── PoC-2 音量: /voltest?durationSec=60&gains=0.2,0.6,1.0&vol=on|off&sink=null ──
+// inlineVolume で BGM 音量を再生中に可変にできるか + その CPU コストを実測する。
+// - BGM を AudioPlayer で再生（inlineVolume=on/off）。VC 接続は張らない（NoSubscriberBehavior.Play
+//   でプレイヤーは消費を続けるため、VC 無しでも VolumeTransformer の CPU コストが計上される）。
+// - durationSec を gains 個の区間に等分し、区間ごとに bgm.setVolume(gain) を適用。
+// - ミックス出力（onFrame）の区間別 RMS を集計し、音量が数値的に追随した証拠を返す。
+//   RTMP 出力経路は AudioResource を通らないので、音量は bgm.pull 内で PCM に適用される（bgm.mjs）。
+// - vol=on/off の CPU 差分が VolumeTransformer のコスト。判定閾値は指揮者側（辻褄合わせしない）。
+async function voltest(res, { durationSec, gains, inlineVolume, nullSink }) {
+  const streamKey = STREAM_KEY();
+  if (!nullSink && !streamKey) return json(res, 200, { ok: false, reason: 'missing-YOUTUBE_STREAM_KEY (or pass sink=null)' });
+  let proc, mixer, bgm, metrics, volTimer, progressPoll;
+  const segMs = Math.floor((durationSec * 1000) / gains.length);
+  const seg = gains.map(() => ({ sumSq: 0, samples: 0 }));
+  let startAt = null;
+  let speedMin = Infinity, dropFramesMax = 0;
+  try {
+    proc = startFfmpeg({ streamKey, silent: false, nullSink });
+    mixer = new Mixer({
+      jitterMs: 60,
+      onFrame: (frame) => {
+        if (startAt === null) startAt = Date.now();
+        const idx = Math.min(gains.length - 1, Math.floor((Date.now() - startAt) / segMs));
+        const bucket = seg[idx];
+        for (let i = 0; i < frame.length; i += 2) { const v = frame.readInt16LE(i); bucket.sumSq += v * v; bucket.samples++; }
+        return writePcm(proc, frame);
+      },
+    });
+    bgm = await Bgm.load('/app/assets/bgm.opus', { frameBytes: FRAME_BYTES });
+    bgm.setVolume(gains[0]);
+    bgm.attachPlayer(null, { inlineVolume }); // VC 無しで inlineVolume の CPU を計測
+    mixer.setBgm((n) => bgm.pull(n), 1.0);    // base gain=1.0。音量変化は bgm.volume 側で起こす
+    metrics = new Metrics({ vcpus: VCPUS, ffmpegPidFn: () => proc?.pid });
+    mixer.start(); metrics.start();
+    // gains を時間分割して順次適用（RMS 集計は onFrame 側が経過時間で区間分けする）
+    let gi = 0;
+    volTimer = setInterval(() => { gi++; if (gi < gains.length) bgm.setVolume(gains[gi]); }, segMs);
+    progressPoll = setInterval(() => {
+      const sp = parseFloat(proc.progress.speed);
+      if (!Number.isNaN(sp)) speedMin = Math.min(speedMin, sp);
+      if (proc.progress.drop_frames != null) dropFramesMax = Math.max(dropFramesMax, proc.progress.drop_frames);
+    }, 1000);
+    await sleep(durationSec * 1000);
+    const m = metrics.summary();
+    const rmsBySegment = seg.map((s, i) => ({
+      gain: gains[i],
+      rms: s.samples ? +Math.sqrt(s.sumSq / s.samples).toFixed(1) : null,
+      samples: s.samples,
+    }));
+    const result = {
+      ok: true, durationSec, vol: inlineVolume ? 'on' : 'off', gains,
+      sink: nullSink ? 'null' : 'rtmps', instanceType: INSTANCE_TYPE, vcpus: VCPUS,
+      cpu: m.cpu, rssMaxMiB: m.rssMaxMiB,
+      rmsBySegment,
+      mixer: mixer.stats(),
+      ffmpeg: { dropFrames: dropFramesMax, speedMin: speedMin === Infinity ? null : `${speedMin}x` },
+    };
+    lastResult = result;
+    console.log('voltest result', JSON.stringify(result));
+    json(res, 200, result);
+  } catch (err) {
+    const failed = { ok: false, reason: `error: ${err.message}`, cpu: metrics?.summary().cpu };
+    lastResult = failed;
+    json(res, 200, failed);
+  } finally {
+    if (volTimer) clearInterval(volTimer);
+    if (progressPoll) clearInterval(progressPoll);
+    try { metrics?.stop(); } catch {}
+    try { mixer?.stop(); } catch {}
+    try { bgm?.stop(); } catch {}
+    try { proc?.stdin.end(); } catch {}
+    try { proc?.kill('SIGINT'); } catch {}
+  }
+}
+
 // ── PoC-1 上り到達性: /plumbingtest ───────────────────────────────────────────
 // コンテナ→自 Worker(/heartbeat)→固定名 'ctrl' の DO→応答、の 1 往復が成立するか実測する。
 async function plumbingtest(res) {
@@ -493,6 +568,14 @@ const server = http.createServer(async (req, res) => {
         switchEverySec: Number(params.get('switchEverySec') || 600),
         loadgenN: Number(params.get('loadgen') || 0),
         fps: Number(params.get('fps') || 15),
+      });
+    } else if (req.url?.startsWith('/voltest')) {
+      const gains = (params.get('gains') || '0.2,0.6,1.0').split(',').map(Number).filter((x) => !Number.isNaN(x));
+      await voltest(res, {
+        durationSec,
+        gains: gains.length ? gains : [0.2, 0.6, 1.0],
+        inlineVolume: (params.get('vol') || 'on') !== 'off',
+        nullSink: params.get('sink') === 'null',
       });
     } else if (req.url?.startsWith('/loadtest')) {
       await loadtest(res, Number(params.get('n') || 1), Number(params.get('durationSec') || 600), params.get('sink') === 'null');
